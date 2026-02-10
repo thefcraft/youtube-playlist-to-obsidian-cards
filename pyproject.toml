@@ -5,7 +5,6 @@ description = "Convert YouTube playlists into Obsidian todo checklists with Auto
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "pydantic>=2.12.5",
     "requests>=2.32.5",
     "typer>=0.21.1",
 ]
