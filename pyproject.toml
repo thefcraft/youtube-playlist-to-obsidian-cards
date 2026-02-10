@@ -1,0 +1,18 @@
+[project]
+name = "youtube-playlist-to-obsidian-cards"
+version = "0.1.0"
+description = "Convert YouTube playlists into Obsidian todo checklists with Auto Card Link previews. Fetches all videos (including continuations) and outputs clean `cardlink` blocks."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "chainsoup>=0.1.8",
+    "pydantic>=2.12.5",
+    "requests>=2.32.5",
+    "typer>=0.21.1",
+]
+
+[dependency-groups]
+dev = [
+    "cached-requests>=0.2.2",
+]
