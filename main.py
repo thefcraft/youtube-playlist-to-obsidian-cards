@@ -3,15 +3,14 @@ import json
 import os
 import re
 from textwrap import dedent
-from src.config import change_dir_to_root, create_session, USER_AGENT
+from src.config import change_dir_to_root, create_session
 from src.parser import (
     ParserError,
     parser_url_and_get_playlist_id,
     get_json_from_content,
 )
+from src.fetch import fetch_continuation
 from src import utils
-from requests import Session
-from typing import Iterable
 from pathlib import Path
 
 app = typer.Typer(
@@ -42,86 +41,6 @@ def make_card(playlist_id: str, index: int, video_id: str, title: str) -> str:
     image: https://i.ytimg.com/vi/{video_id}/hqdefault.jpg
     ```
     """).strip()
-
-
-def fetch_continuation(
-    session: Session,
-    playlist_id: str,
-    continuation_token: str,
-    video_index: int,
-) -> Iterable[str]:
-    with session.post(
-        "https://www.youtube.com/youtubei/v1/browse",
-        params={
-            "prettyPrint": False,
-        },
-        json={
-            "context": {
-                "client": {
-                    "userAgent": USER_AGENT,
-                    "clientName": "WEB",
-                    "clientVersion": "2.20260206.08.00",
-                    "osName": "X11",
-                    "osVersion": "",
-                    "originalUrl": f"https://www.youtube.com/playlist?list={playlist_id}",
-                    "screenPixelDensity": 2,
-                    "platform": "DESKTOP",
-                    "clientFormFactor": "UNKNOWN_FORM_FACTOR",
-                },
-            },
-            "continuation": continuation_token,
-        },
-        headers={
-            "referrer": f"https://www.youtube.com/playlist?list={playlist_id}",
-        },
-    ) as resp:
-        resp.raise_for_status()
-        content = resp.json()
-        continuationItems = utils.get_nested_item(
-            content,
-            "onResponseReceivedActions",
-            utils.ListExactlyOne,
-            "appendContinuationItemsAction",
-            "continuationItems",
-        )
-
-        continuationItemRenderer_found: bool = False
-        for video_index, continuationItem in enumerate(
-            continuationItems, start=video_index
-        ):
-            continuationItemRenderer = continuationItem.get("continuationItemRenderer")
-            if continuationItemRenderer_found:
-                raise ValueError(
-                    "continuationItemRenderer can only occure at max 1 time and it should be at last."
-                )
-            if continuationItemRenderer is not None:
-                continuationItemRenderer_found = True
-                yield from fetch_continuation(
-                    session,
-                    playlist_id,
-                    continuation_token=utils.get_nested_item(
-                        continuationItemRenderer,
-                        "continuationEndpoint",
-                        "continuationCommand",
-                        "token",
-                    ),
-                    video_index=video_index,
-                )
-                continue
-            playlistVideoRenderer = continuationItem["playlistVideoRenderer"]
-            video_id = playlistVideoRenderer["videoId"]
-            yield make_card(
-                playlist_id=playlist_id,
-                index=video_index,
-                video_id=video_id,
-                title=utils.get_nested_item(
-                    playlistVideoRenderer,
-                    "title",
-                    "runs",
-                    utils.ListExactlyOne,
-                    "text",
-                ),
-            )
 
 
 @app.command()
@@ -200,12 +119,9 @@ def main(
             out = Path(f"playlist - {playlist_id}")
 
         if out.exists() and not force:
-            raise typer.BadParameter(
-                f"{out} already exists. Use --force to overwrite."
-            )
+            raise typer.BadParameter(f"{out} already exists. Use --force to overwrite.")
 
         out_path = out
-
 
     # ---- EXTRACT CONTENTS ----
     contents = utils.get_nested_item(
@@ -233,40 +149,48 @@ def main(
             raise ValueError(
                 "continuationItemRenderer can only occure at max 1 time and it should be at last."
             )
-        if continuationItemRenderer is not None:
+        elif continuationItemRenderer is not None:
             continuationItemRenderer_found = True
             cards.extend(
-                fetch_continuation(
-                    session,
-                    playlist_id,
-                    continuation_token=utils.get_nested_item(
-                        continuationItemRenderer,
-                        "continuationEndpoint",
-                        "commandExecutorCommand",
-                        "commands",
-                        utils.ListExactlyOneChildDictKey,
-                        "continuationCommand",
-                        "token",
+                map(
+                    lambda video_info: make_card(
+                        playlist_id=video_info["playlist_id"],
+                        index=video_info["index"],
+                        video_id=video_info["video_id"],
+                        title=video_info["title"],
                     ),
-                    video_index=video_index,
+                    fetch_continuation(
+                        session,
+                        playlist_id,
+                        continuation_token=utils.get_nested_item(
+                            continuationItemRenderer,
+                            "continuationEndpoint",
+                            "commandExecutorCommand",
+                            "commands",
+                            utils.ListExactlyOneChildDictKey,
+                            "continuationCommand",
+                            "token",
+                        ),
+                        video_index=video_index,
+                    ),
                 )
             )
-            continue
-        playlistVideoRenderer = content["playlistVideoRenderer"]
-        video_id = playlistVideoRenderer["videoId"]
-        card = make_card(
-            playlist_id=playlist_id,
-            index=video_index,
-            video_id=video_id,
-            title=utils.get_nested_item(
-                playlistVideoRenderer,
-                "title",
-                "runs",
-                utils.ListExactlyOne,
-                "text",
-            ),
-        )
-        cards.append(card)
+        else:
+            playlistVideoRenderer = content["playlistVideoRenderer"]
+            video_id = playlistVideoRenderer["videoId"]
+            card = make_card(
+                playlist_id=playlist_id,
+                index=video_index,
+                video_id=video_id,
+                title=utils.get_nested_item(
+                    playlistVideoRenderer,
+                    "title",
+                    "runs",
+                    utils.ListExactlyOne,
+                    "text",
+                ),
+            )
+            cards.append(card)
 
     result = "\n".join(cards)
 
@@ -277,6 +201,7 @@ def main(
             raise RuntimeError("UNLIKELY.")
         out_path.write_text(result, encoding="utf-8")
         typer.secho(f"Wrote {len(cards)} cards → {out_path}", fg=typer.colors.GREEN)
+
 
 if __name__ == "__main__":
     app()
